@@ -545,13 +545,20 @@ class Session:
         Returns:
             True if the instance state is 'running'.
             False if the instance is in any other state (terminated,
-                stopped, shutting-down, etc.).
-            None if the instance ID is not set or the API call fails.
+                stopped, shutting-down, etc.), or if the instance ID is
+                not found (definitively gone).
+            None if the instance ID is not set or the API call fails
+                due to a transient error (network, throttling).
         """
         if not self._instance_id:
             return None
         try:
             return self.ec2.get_instance_state(self._instance_id) == "running"
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("InvalidInstanceID.NotFound", "InvalidInstanceID.Malformed"):
+                return False  # Definitively gone
+            return None  # Transient API error
         except Exception:
             return None
 
@@ -602,7 +609,12 @@ class Session:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        self.teardown()
+        try:
+            self.teardown()
+        except Exception:
+            if exc_type is None:
+                raise  # No prior exception — let teardown failure propagate
+            # Swallow teardown failure to preserve the original exception
 
     # -- Internal --
 
