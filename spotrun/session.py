@@ -518,13 +518,70 @@ class Session:
         self._sync.ssh_interactive()
 
     def teardown(self) -> None:
-        """Terminate the instance and clean up state."""
+        """Terminate the instance and clean up state.
+
+        Logs a warning on termination failure but re-raises the exception
+        so callers can handle it.  Instance metadata is always cleared
+        (even on failure) to prevent retry loops on the same ID.
+        """
         if self._instance_id:
-            self.ec2.terminate_instance(self._instance_id)
-            self._instance_id = None
-            self._ip = None
-            self._sync = None
+            try:
+                self.ec2.terminate_instance(self._instance_id)
+            except Exception as e:
+                console.print(
+                    f"[bold yellow]Warning: failed to terminate "
+                    f"{self._instance_id}: {e}[/bold yellow]"
+                )
+                raise
+            finally:
+                self._instance_id = None
+                self._ip = None
+                self._sync = None
         self._clear_state()
+
+    def is_instance_running(self) -> bool | None:
+        """Check if the EC2 instance is still running via the EC2 API.
+
+        Returns:
+            True if the instance state is 'running'.
+            False if the instance is in any other state (terminated,
+                stopped, shutting-down, etc.).
+            None if the instance ID is not set or the API call fails.
+        """
+        if not self._instance_id:
+            return None
+        try:
+            return self.ec2.get_instance_state(self._instance_id) == "running"
+        except Exception:
+            return None
+
+    def reconnect(self, timeout: int = 120) -> None:
+        """Re-establish SSH connection to a still-running instance.
+
+        Call this when the SSH connection has dropped but the EC2 instance
+        is still running (verified via :meth:`is_instance_running`).
+        Creates a new :class:`~spotrun.sync.DataSync` object using the
+        existing IP and PEM path.
+
+        Does **not** re-sync project files -- the remote working directory
+        is unchanged.  The caller decides whether to re-sync after
+        reconnecting.
+
+        Args:
+            timeout: Seconds to wait for SSH to become available.
+
+        Raises:
+            RuntimeError: If no active instance exists.
+            TimeoutError: If SSH is not reachable within *timeout*.
+        """
+        if not self._instance_id or not self._ip or not self._pem_path:
+            raise RuntimeError(
+                "Cannot reconnect: no active instance. "
+                "Call launch() first or verify is_instance_running()."
+            )
+        self.ec2.wait_for_ssh(self._ip, timeout=timeout)
+        self._sync = DataSync(self._ip, self._pem_path)
+        self._print(f"[green]Reconnected to {self._ip}[/green]")
 
     def get_pricing_info(self) -> dict:
         """Return pricing info without launching anything."""

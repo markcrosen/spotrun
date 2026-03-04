@@ -300,6 +300,20 @@ class EC2Manager:
             raise RuntimeError(f"Instance {instance_id} has no public IP")
         return ip
 
+    def get_instance_state(self, instance_id: str) -> str:
+        """Query the current state of an EC2 instance.
+
+        Returns one of: 'pending', 'running', 'shutting-down',
+        'terminated', 'stopping', 'stopped'.
+
+        Raises ``ClientError`` on API failure.
+        """
+        resp = self.client.describe_instances(InstanceIds=[instance_id])
+        reservations = resp.get("Reservations", [])
+        if not reservations or not reservations[0].get("Instances"):
+            raise RuntimeError(f"Instance {instance_id} not found")
+        return reservations[0]["Instances"][0]["State"]["Name"]
+
     def terminate_instance(self, instance_id: str) -> None:
         """Terminate an EC2 instance."""
         self.client.terminate_instances(InstanceIds=[instance_id])

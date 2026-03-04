@@ -129,7 +129,9 @@ s.teardown()
 | `.install_deps()` | Detect and install Python dependencies from `requirements.txt` or `pyproject.toml` on the remote. Returns True if deps were installed. |
 | `.run(command)` | Run a shell command on the instance via SSH. The project venv is activated automatically. Pass `activate_venv=False` for non-Python commands. Returns exit code. |
 | `.ssh()` | Open an interactive SSH session (replaces current process). |
-| `.teardown()` | Terminate the instance and clean up state. |
+| `.teardown()` | Terminate the instance and clean up state. Raises on failure (logs a warning first). |
+| `.is_instance_running()` | Check if the EC2 instance is still running. Returns `True`, `False`, or `None` (API unreachable). Useful for verifying instance state when SSH drops (exit code 255 doesn't always mean the instance died). |
+| `.reconnect(timeout=120)` | Re-establish SSH to a running instance after a connection drop. Does not re-sync files. Raises `TimeoutError` if SSH is unreachable within *timeout* seconds. |
 | `.get_pricing_info()` | Return pricing info without launching anything. |
 
 ## Parallel Jobs Across Machines
@@ -163,6 +165,26 @@ with ThreadPoolExecutor(max_workers=20) as pool:
 ```
 
 Anywhere you'd parallelize across CPUs, you can now parallelize across machines.
+
+### Handling SSH Disconnects
+
+When running many parallel sessions, SSH connections can drop due to local network congestion even though the remote instances are healthy. SSH exit code 255 does **not** always mean the instance was terminated -- it can also mean a transient local network issue.
+
+Use `is_instance_running()` and `reconnect()` to recover gracefully instead of tearing down healthy instances:
+
+```python
+exit_code = session.run("python train.py")
+if exit_code == 255:
+    # Don't assume the instance is dead -- check first
+    if session.is_instance_running():
+        session.reconnect()
+        exit_code = session.run("python train.py --resume")
+    else:
+        # Instance truly terminated (spot reclaim), relaunch
+        session.teardown()
+```
+
+This is especially important when running 10+ parallel sessions from a single machine, where rsync and SSH traffic can saturate the local network and cause keepalive timeouts.
 
 ## Instance Sizing
 
